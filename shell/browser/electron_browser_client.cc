@@ -51,6 +51,7 @@
 #include "extensions/browser/extension_protocols.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/switches.h"
+#include "mojo/public/cpp/bindings/binder_map.h"
 #include "net/base/escape.h"
 #include "net/ssl/ssl_cert_request_info.h"
 #include "ppapi/buildflags/buildflags.h"
@@ -59,7 +60,6 @@
 #include "services/device/public/cpp/geolocation/location_provider.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/resource_request_body.h"
-#include "services/service_manager/public/cpp/binder_map.h"
 #include "shell/app/manifests.h"
 #include "shell/browser/api/electron_api_app.h"
 #include "shell/browser/api/electron_api_crash_reporter.h"
@@ -917,24 +917,26 @@ void ElectronBrowserClient::SiteInstanceGotProcess(
 #if BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
   auto* browser_context =
       static_cast<ElectronBrowserContext*>(site_instance->GetBrowserContext());
-  extensions::ExtensionRegistry* registry =
-      extensions::ExtensionRegistry::Get(browser_context);
-  const extensions::Extension* extension =
-      registry->enabled_extensions().GetExtensionOrAppByURL(
-          site_instance->GetSiteURL());
-  if (!extension)
-    return;
+  if (!browser_context->IsOffTheRecord()) {
+    extensions::ExtensionRegistry* registry =
+        extensions::ExtensionRegistry::Get(browser_context);
+    const extensions::Extension* extension =
+        registry->enabled_extensions().GetExtensionOrAppByURL(
+            site_instance->GetSiteURL());
+    if (!extension)
+      return;
 
-  extensions::ProcessMap::Get(browser_context)
-      ->Insert(extension->id(), site_instance->GetProcess()->GetID(),
-               site_instance->GetId());
+    extensions::ProcessMap::Get(browser_context)
+        ->Insert(extension->id(), site_instance->GetProcess()->GetID(),
+                 site_instance->GetId());
 
-  base::PostTask(
-      FROM_HERE, {BrowserThread::IO},
-      base::BindOnce(&extensions::InfoMap::RegisterExtensionProcess,
-                     browser_context->extension_system()->info_map(),
-                     extension->id(), site_instance->GetProcess()->GetID(),
-                     site_instance->GetId()));
+    base::PostTask(
+        FROM_HERE, {BrowserThread::IO},
+        base::BindOnce(&extensions::InfoMap::RegisterExtensionProcess,
+                       browser_context->extension_system()->info_map(),
+                       extension->id(), site_instance->GetProcess()->GetID(),
+                       site_instance->GetId()));
+  }
 #endif  // BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
 }
 
@@ -999,25 +1001,27 @@ void ElectronBrowserClient::SiteInstanceDeleting(
 
   auto* browser_context =
       static_cast<ElectronBrowserContext*>(site_instance->GetBrowserContext());
-  // If this isn't an extension renderer there's nothing to do.
-  extensions::ExtensionRegistry* registry =
-      extensions::ExtensionRegistry::Get(browser_context);
-  const extensions::Extension* extension =
-      registry->enabled_extensions().GetExtensionOrAppByURL(
-          site_instance->GetSiteURL());
-  if (!extension)
-    return;
+  if (!browser_context->IsOffTheRecord()) {
+    // If this isn't an extension renderer there's nothing to do.
+    extensions::ExtensionRegistry* registry =
+        extensions::ExtensionRegistry::Get(browser_context);
+    const extensions::Extension* extension =
+        registry->enabled_extensions().GetExtensionOrAppByURL(
+            site_instance->GetSiteURL());
+    if (!extension)
+      return;
 
-  extensions::ProcessMap::Get(browser_context)
-      ->Remove(extension->id(), site_instance->GetProcess()->GetID(),
-               site_instance->GetId());
+    extensions::ProcessMap::Get(browser_context)
+        ->Remove(extension->id(), site_instance->GetProcess()->GetID(),
+                 site_instance->GetId());
 
-  base::PostTask(
-      FROM_HERE, {BrowserThread::IO},
-      base::BindOnce(&extensions::InfoMap::UnregisterExtensionProcess,
-                     browser_context->extension_system()->info_map(),
-                     extension->id(), site_instance->GetProcess()->GetID(),
-                     site_instance->GetId()));
+    base::PostTask(
+        FROM_HERE, {BrowserThread::IO},
+        base::BindOnce(&extensions::InfoMap::UnregisterExtensionProcess,
+                       browser_context->extension_system()->info_map(),
+                       extension->id(), site_instance->GetProcess()->GetID(),
+                       site_instance->GetId()));
+  }
 #endif
 }
 
@@ -1045,14 +1049,16 @@ ElectronBrowserClient::OverrideSystemLocationProvider() {
 #endif
 }
 
-mojo::Remote<network::mojom::NetworkContext>
-ElectronBrowserClient::CreateNetworkContext(
+void ElectronBrowserClient::ConfigureNetworkContextParams(
     content::BrowserContext* browser_context,
-    bool /*in_memory*/,
-    const base::FilePath& /*relative_partition_path*/) {
+    bool in_memory,
+    const base::FilePath& relative_partition_path,
+    network::mojom::NetworkContextParams* network_context_params,
+    network::mojom::CertVerifierCreationParams* cert_verifier_creation_params) {
   DCHECK(browser_context);
   return NetworkContextServiceFactory::GetForContext(browser_context)
-      ->CreateNetworkContext();
+      ->ConfigureNetworkContextParams(network_context_params,
+                                      cert_verifier_creation_params);
 }
 
 network::mojom::NetworkContext*
@@ -1587,7 +1593,7 @@ void BindBeforeUnloadControl(
 
 void ElectronBrowserClient::RegisterBrowserInterfaceBindersForFrame(
     content::RenderFrameHost* render_frame_host,
-    service_manager::BinderMapWithContext<content::RenderFrameHost*>* map) {
+    mojo::BinderMapWithContext<content::RenderFrameHost*>* map) {
   map->Add<network_hints::mojom::NetworkHintsHandler>(
       base::BindRepeating(&BindNetworkHintsHandler));
 #if BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
